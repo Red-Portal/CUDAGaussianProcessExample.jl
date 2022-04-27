@@ -1,171 +1,116 @@
 
-using CUDA
-using CUDAKernels
-using Zygote
-using LinearAlgebra
-using KernelAbstractions
-using KernelFunctions
-using BenchmarkTools
-using AbstractGPs
-using ProgressMeter
-using Plots
+using Optim
+using Random
 using Statistics
-using Test
+using DelimitedFiles
+using Distributions
 
 include("gp_cuda_utils.jl")
 
-matern_kernel(α², logℓ) =
-    α² * (KernelFunctions.Matern52Kernel() ∘ KernelFunctions.ARDTransform(@. exp(-logℓ)))
+function load_dataset()
+    data = readdlm("housing.csv")
+    X    = Array{Float32}(data[:, 1:end-1])
+    y    = Array{Float32}(data[:, end])
 
-likelihood_cpu(X, θ) = begin
-    N      = size(X, 2)
-    ℓσ     = θ[1]
-    ℓϵ     = θ[2]
-    y      = θ[3:2+N]
-    logℓ   = θ[3+N:end]
-    kernel = matern_kernel(exp(ℓσ * 2), logℓ)
-    gp     = AbstractGPs.GP(kernel)
-    fx     = gp(X, exp(ℓϵ * 2))
-    logpdf(fx, y)
+    n_data      = size(X, 1)
+    n_train     = round(Int, n_data*0.9)
+    shuffle_idx = Random.shuffle(1:n_data)
+    X           = X[shuffle_idx,:]
+    y           = y[shuffle_idx]
+
+    X_train     = X[1:n_train,:]
+    X_test      = X[n_train+1:end,:]
+    y_train     = y[1:n_train]
+    y_test      = y[n_train+1:end]
+
+    μ_x = mean(X_train, dims=1)
+    σ_x = std( X_train, dims=1)
+    μ_y = mean(y_train)
+    σ_y = std(y_train)
+
+    X_train .-= μ_x
+    X_train ./= σ_x
+    X_test  .-= μ_x
+    X_test  ./= σ_x
+
+    y_train .-= μ_y
+    y_test  .-= μ_y
+    y_train ./= σ_y
+    y_test  ./= σ_y
+
+    Array(X_train'), Array(X_test'), y_train, y_test
 end
 
-likelihood_gpu(X_dev, θ) = begin
-    N  = size(X_dev, 2)
-    ℓσ = θ[1]
-    ℓϵ = θ[2]
-    y  = cu(θ[3:2+N])
-    ℓ² = cu(exp.(θ[3+N:end] * 2))
-    gp_likelihood(X_dev, y, exp(ℓσ * 2), exp(ℓϵ * 2), ℓ²)
-end
+function main()
+    X_train, X_test, y_train, y_test = load_dataset()
 
-gradient_cpu(X, θ) = Zygote.gradient(θ_ -> likelihood_cpu(X, θ_), θ)[1]
-gradient_gpu(X, θ) = Zygote.gradient(θ_ -> likelihood_gpu(X, θ_), θ)[1]
+    X_train_dev = cu(X_train)
+    X_test_dev  = cu(X_test)
+    y_train_dev = cu(y_train)
 
-Test.@testset "GPU Gaussian process numerical accuracy test" begin
-    N     = 128
-    D     = 16
-    X     = randn(Float32, D, N)
-    X_dev = cu(X)
-    θ     = randn(Float32, N + D + 2)
+    N  = size(X_train_dev, 2)
+    D  = size(X_train_dev, 1)
 
-    @test likelihood_cpu(X, θ) ≈ likelihood_gpu(X_dev, θ)          atol=1e-4
-    @test norm(gradient_cpu(X, θ) - gradient_gpu(X_dev, θ)) ≈ 0.0  atol=1e-4
-end
-
-function benchmark()
-    CUDA.allowscalar(true)
-
-    D     = 16
-    N     = 2048
-    X     = randn(Float32, D, N)
-    X_dev = cu(X)
-    θ     = randn(Float32, N + D + 2)
-
-    bench_likelihood_cpu = @benchmarkable likelihood_cpu(data.X, data.θ) setup = (data = (X = $X,     θ = $θ))
-    bench_likelihood_gpu = @benchmarkable likelihood_gpu(data.X, data.θ) setup = (data = (X = $X_dev, θ = $θ))
-    bench_gradient_cpu   = @benchmarkable gradient_cpu(data.X, data.θ)   setup = (data = (X = $X,     θ = $θ))
-    bench_gradient_gpu   = @benchmarkable gradient_gpu(data.X, data.θ)   setup = (data = (X = $X_dev, θ = $θ))
-
-    @info("Gaussian Process Likelihood Evaluation",
-          device="CPU", n_data=N, n_dims=D)
-    display(run(bench_likelihood_cpu, samples = 1024, seconds=30))
-
-    @info("Gaussian Process Likelihood Evaluation",
-          device="GPU", n_data=N, n_dims=D)
-    display(run(bench_likelihood_gpu, samples = 1024, seconds=30))
-
-    @info("Gaussian Process Gradient Evaluation",
-          device="CPU", n_data=N, n_dims=D)
-    display(run(bench_gradient_cpu, samples = 1024, seconds=30))
-
-    @info("Gaussian Process Gradient Evaluation",
-          device="GPU", n_data=N, n_dims=D)
-    display(run(bench_gradient_gpu, samples = 1024, seconds=30))
-end
-
-function scalability()
-    CUDA.allowscalar(true)
-
-    Ns = 2 .^(6:1:12)
-    ts = @showprogress map(Ns) do N
-        D     = 16
-        X     = randn(Float32, D, N)
-        X_dev = cu(X)
-        θ     = randn(Float32, N + D + 2)
-
-        likelihood_bench_cpu = @benchmarkable likelihood_cpu(data.X, data.θ) setup = (data = (X = $X, θ = $θ))
-        likelihood_bench_gpu = @benchmarkable likelihood_gpu(data.X, data.θ) setup = (data = (X = $X_dev, θ = $θ))
-        gradient_bench_cpu   = @benchmarkable gradient_cpu(data.X, data.θ)   setup = (data = (X = $X, θ = $θ))
-        gradient_bench_gpu   = @benchmarkable gradient_gpu(data.X, data.θ)   setup = (data = (X = $X_dev, θ = $θ))
-        likelihood_res_cpu  = run(likelihood_bench_cpu, samples = 32, seconds=8)
-        likelihood_res_gpu  = run(likelihood_bench_gpu, samples = 32, seconds=8)
-        gradient_res_cpu    = run(gradient_bench_cpu, samples = 32, seconds=8)
-        gradient_res_gpu    = run(gradient_bench_gpu, samples = 32, seconds=8)
-
-        likelihood_stat_cpu = quantile(likelihood_res_cpu.times, [0.5, 0.1, 0.9])
-        likelihood_stat_gpu = quantile(likelihood_res_gpu.times, [0.5, 0.1, 0.9])
-        gradient_stat_cpu   = quantile(gradient_res_cpu.times,   [0.5, 0.1, 0.9])
-        gradient_stat_gpu   = quantile(gradient_res_gpu.times,   [0.5, 0.1, 0.9])
-
-        (likelihood_cpu = likelihood_stat_cpu,
-         likelihood_gpu = likelihood_stat_gpu,
-         gradient_cpu   = gradient_stat_cpu,
-         gradient_gpu   = gradient_stat_gpu,
-         )
+    function likelihood(θ_)
+        ℓσ     = θ_[1]
+        ℓϵ     = θ_[2]
+        ℓ²_dev = cu(exp.(θ_[3:end] * 2))
+        gp_likelihood(X_train_dev, y_train_dev, exp(ℓσ * 2), exp(ℓϵ * 2), ℓ²_dev)
     end
-    likelihood_cpu_meds = [t.likelihood_cpu[1] for t ∈ ts] / 1e+9
-    likelihood_cpu_err⁺ = [abs(t.likelihood_cpu[2] - t.likelihood_cpu[1]) for t ∈ ts] / 1e+9
-    likelihood_cpu_err⁻ = [abs(t.likelihood_cpu[3] - t.likelihood_cpu[1]) for t ∈ ts] / 1e+9
 
-    likelihood_gpu_meds = [t.likelihood_gpu[1] for t ∈ ts] / 1e+9
-    likelihood_gpu_err⁺ = [abs(t.likelihood_gpu[2] - t.likelihood_gpu[1]) for t ∈ ts] / 1e+9
-    likelihood_gpu_err⁻ = [abs(t.likelihood_gpu[3] - t.likelihood_gpu[1]) for t ∈ ts] / 1e+9
+    function fg!(F,G,θ_)
+        if isnothing(G)
+            y = likelihood(θ_)
+            -y
+        else
+            y, back = Zygote.pullback(likelihood, θ_)
+            ∇like   = back(one(y))[1]
+            G[:]    = -Array(∇like) # Gradient is a CuArray
+            -y
+        end
+    end
 
-    gradient_cpu_meds = [t.gradient_cpu[1] for t ∈ ts] / 1e+9
-    gradient_cpu_err⁺ = [abs(t.gradient_cpu[2] - t.gradient_cpu[1]) for t ∈ ts] / 1e+9
-    gradient_cpu_err⁻ = [abs(t.gradient_cpu[3] - t.gradient_cpu[1]) for t ∈ ts] / 1e+9
+    function predict_batch(X_pred_dev, θ_)
+        σ²     = exp(θ_[1]*2)
+        ϵ²     = exp(θ_[2]*2)
+        ℓ²_dev = cu(exp.(θ_[3:end] * 2))
 
-    gradient_gpu_meds = [t.gradient_gpu[1] for t ∈ ts] / 1e+9
-    gradient_gpu_err⁺ = [abs(t.gradient_gpu[2] - t.gradient_gpu[1]) for t ∈ ts] / 1e+9
-    gradient_gpu_err⁻ = [abs(t.gradient_gpu[3] - t.gradient_gpu[1]) for t ∈ ts] / 1e+9
+        R_train = distance_matrix_gpu(X_train_dev, X_train_dev, ℓ²_dev)
+        K_unit  = matern52_gpu(R_train)
+        K       = eltype(K_unit)(σ²) * K_unit + eltype(K_unit)(1e-6 + ϵ²) * I
+        K_chol  = cholesky(K; check = false)
 
+        R_pred_train      = distance_matrix_gpu(X_pred_dev, X_train_dev, ℓ²_dev)
+        K_unit_pred_train = matern52_gpu(R_pred_train)
+        K_pred_train      = eltype(K_unit_pred_train)(σ²) * K_unit_pred_train
 
-    p1 = Plots.plot(Ns, likelihood_cpu_meds,
-                    yerr=(likelihood_cpu_err⁺,likelihood_cpu_err⁻,),
-                    markerstrokecolor=:auto,
-                    xscale=:log10,
-                    yscale=:log10,
-                    xlabel="N",
-                    ylabel="Time (sec)",
-                    label="CPU (8 threads)")
-    Plots.plot!(p1, Ns, likelihood_gpu_meds,
-                yerr=(likelihood_gpu_err⁺,likelihood_gpu_err⁻,),
-                markerstrokecolor=:auto,
-                title="Likelihood",
-                legend=:bottomright,
-                xscale=:log10,
-                yscale=:log10,
-                xlabel="N",
-                ylabel="Time (sec)",
-                label="GPU (GTX 1050)")
+        μ_f_pred  = Array(K_pred_train * (K_chol \ y_train_dev))
+        v         = K_chol.L \ K_pred_train'
+        kᵀK⁻¹k    = Array(sum(v .* v, dims = 1)[1, :])
+        σ²_f_pred = max.(σ² .+ ϵ² .- kᵀK⁻¹k, eps(eltype(K)))
+        μ_f_pred, σ²_f_pred
+    end
+    
+    θ₀  = randn(D + 2)
+    opt = optimize(Optim.only_fg!(fg!), θ₀, LBFGS())
+    display(opt)
+    θ   = Optim.minimizer(opt)
 
-    p2 = Plots.plot(Ns, gradient_cpu_meds,
-                    yerr=(gradient_cpu_err⁺,gradient_cpu_err⁻,),
-                    markerstrokecolor=:auto,
-                    xscale=:log10,
-                    yscale=:log10,
-                    xlabel="N",
-                    ylabel="Time (sec)",
-                    label="CPU (8 threads)")
-    Plots.plot!(p2, Ns, gradient_gpu_meds,
-                yerr=(gradient_gpu_err⁺,gradient_gpu_err⁻,),
-                markerstrokecolor=:auto,
-                title="Gradient",
-                xscale=:log10,
-                yscale=:log10,
-                legend=:bottomright,
-                xlabel="N",
-                ylabel="Time (sec)",
-                label="GPU (GTX 1050)")
-    Plots.plot(p1, p2, layout=(1,2))
+    μ_opt, σ²_opt   = predict_batch(X_test_dev, θ)
+    μ_init, σ²_init = predict_batch(X_test_dev, θ₀)
+
+    rmse_opt  = sqrt(mean((μ_opt  - y_test).^2))
+    rmse_init = sqrt(mean((μ_init - y_test).^2))
+    lpd_opt   = mean(logpdf.(Normal.(μ_opt, sqrt.(σ²_opt)), y_test))
+    lpd_init  = mean(logpdf.(Normal.(μ_init, sqrt.(σ²_init)), y_test))
+    
+    @info("MAP-II Hyperparameter Optimization Result",
+          likelihood_before=likelihood(θ₀),
+          likelihood_after=likelihood(θ),
+          rmse_before=rmse_init,
+          rmse_after=rmse_opt,
+          lpd_before=lpd_init,
+          lpd_after=lpd_opt,
+          )
 end
+
