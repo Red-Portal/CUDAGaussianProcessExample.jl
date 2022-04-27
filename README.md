@@ -6,6 +6,14 @@ Currently, there is not proper way to implement Gaussian processes on Julia in a
 This package is a minimal attempt to fill the void in the meantime.
 For a detailed discussion, see [this blog post]()
 
+## Usage
+This package is more like a code snippet and not a proper "package".
+Instead, please copy `gp_cuda_utils.jl` to your project and use it or modify for your use case.
+
+Currently, the implementation only has two types of kernels: squared exponential and Matern 5/2 both with automatic relevance determination.
+
+Detailed usage can be found in `main.jl`
+
 ## Installation
 
 ```sh
@@ -33,10 +41,6 @@ Here is an example result:
 │   lpd_before = -0.8926057396811591
 └   lpd_after = -0.16185267732364805
 ```
-
-## Usage
-This package is more like a code snippet and not a proper "package".
-Instead, please copy `gp_cuda_utils.jl` to your project and use it or modify for your use case.
 
 
 ## Cholesky Failure
