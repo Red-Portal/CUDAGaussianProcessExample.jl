@@ -16,16 +16,20 @@ Detailed usage can be found in `main.jl`
 
 ## Installation
 
+As usual, for download the package as:
 ```sh
 git clone CUDAGaussianProcessExample.jl
 cd CUDAGaussianProcessExample.jl
 ```
+
+Within the Julia interpreter, enter:
 ```julia
 > . activate
 > instantiate
 include("main.jl")
 main()
 ```
+The results in the blog post are reproducible using `benchmark.jl`
 
 ## Example
 
