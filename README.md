@@ -7,8 +7,9 @@ This package is a minimal attempt to fill the void in the meantime.
 For a detailed discussion, see [this blog post]()
 
 ## Usage
+The main routines are in `gp_cuda_utils.jl`.
 This package is more like a code snippet and not a proper "package".
-Instead, please copy `gp_cuda_utils.jl` to your project and use it or modify for your use case.
+Pplease copy `gp_cuda_utils.jl` to your project and use it or modify it to your use.
 
 Currently, the implementation only has two types of kernels: squared exponential and Matern 5/2 both with automatic relevance determination.
 
