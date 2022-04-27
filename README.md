@@ -4,7 +4,7 @@
 This is a minimal implementation of Gaussian processes that runs on [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) and supports [Zygote](https://github.com/FluxML/Zygote.jl).
 Currently, there is not proper way to implement Gaussian processes on Julia in a way that supports both GPUs and differentiation.
 This package is a minimal attempt to fill the void in the meantime.
-For a detailed discussion, see [this blog post]()
+For a detailed discussion, see [this blog post](https://krkim.me/blog/2022/gp_cuda)
 
 ## Usage
 The main routines are in `gp_cuda_utils.jl`.
